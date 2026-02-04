@@ -1,0 +1,384 @@
+---
+title: "Lab report 1"
+output: Lab report 1
+date: "2026-01-08"
+---
+
+```{r setup, include=FALSE}
+
+library(tidyverse)
+library(psych)
+library(skimr)
+library(fixest)
+library(car)
+library(knitr)
+library(kableExtra)
+library(modelsummary)
+library(gtsummary) 
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+I first imported the dataset, create a mini version and delate the first and huge dataset (qog) full of useless data.
+
+```{r intro}
+
+#import the dataset
+qog <- read_csv("qog_std_ts_jan25.csv", show_col_types = FALSE)
+
+#Create a mini version
+mini_qog <- qog %>%
+  select(cname, year, wdi_mortinf, wdi_gini, wdi_gdpcapcur, vdem_libdem, wdi_popurb, mad_gdppc1900) 
+
+rm(qog) #delate qog dataset
+
+```
+
+__1. Data overview and descriptive statistics__
+
+a) variables
+
+Independent variable (x):
+-Gini index: wdi_gini
+A Gini index of 0 represents perfect equality, while an index of 100 implies perfect inequality.
+
+Dependent variable (y):
+-Mortality rate, infant (per 1,000 live births): wdi_mortinf
+
+Control variables:
+-GDP per capita (current US dollar): wdi_gdpcapcur
+-Liberal democracy index:vdem_libdem
+To what extent is the ideal of liberal democracy achieved?
+-Urban population (% of total population): wdi_popurb
+ 
+ 
+ 
+b) I calcualte the number of observation, the timespan and lastly I create a table of the number of observation, mean, standard deviation, minimum and maximum for all the variables
+
+```{r part 1}
+#number of observation
+num_obs <- nrow(mini_qog)
+print(num_obs)
+#The number of observations are: 12391 unfortunatly the Gini index have a huge number of missing values
+
+
+#timespan
+values <- c("wdi_gini", "wdi_mortinf", "wdi_gdpcapcur", "vdem_libdem",  "wdi_popurb")
+sapply(values, function(v){ range(mini_qog$year[!is.na(mini_qog[v])], na.rm = TRUE)})
+#wdi_gini between 1963-2023
+#wdi_mortinf between 1960-2022
+#wdi_gdpcapcur between 1960-2023
+#vdem_libdem between 1946 and 2023
+#wdi_popurb between 1960 and 2023
+
+
+#created a dataframe with the descriptive statistic
+table_qog <- as.data.frame(describe(mini_qog[, c("wdi_mortinf", "wdi_gini", "wdi_gdpcapcur", "vdem_libdem", "wdi_popurb")]))
+
+# clean the dataframe selecting only information that are relevant
+df_stats <- table_qog[, c("n", "mean", "sd", "min", "max")] 
+
+
+round(df_stats, 2)
+#save the dataframe as table
+df_stats %>%
+  kbl(digits = 2) %>% #it create a table with two decimals
+  kable_classic(full_width = F) %>% #it apply the academic style
+  save_kable("tabella_bella.png", zoom = 5) #it save the tabel
+
+#Gini index: most countries have an index that is distributed near the mean, since the SD is nearly 4 times lower than the mean.
+
+#Mortality rate: the standard deviation and the mean are really near, it indicates that the world is divided into countries with dramatically high and countries with really low rates, this is confirmed by the minimum and maximum columns.
+
+#GDP per capita: the standard deviation is two times the mean, there are some countries that are super rich, and they contribute to boosting that mean, more probably most countries are lower than the mean. The maximum value is extreme if compared with the minimum.
+
+#Liberal democracy index: there isn't a global tendency but the world is split, the standard deviation is slightly lower than the mean, there isn't a central tendency the values are probably distributed all over the graph.
+
+#Urban population: half of the global population lives in urban areas, this is a global trend, it's possible to understand since the SD is half of the mean, only some countries don't follow this trend.
+
+```
+
+__2. Bivariate analysis using pooled OLS__
+
+I create a bivariate regression and rapresented it in a scatterplot
+
+```{r part 2}
+model1 <- lm(wdi_mortinf ~ wdi_gini, data = mini_qog)
+summary(model1)
+#this first model is statistically significat due to his low P value, the indipendent variable is able to explain the 12,3% of the variation of the dependent variable, it's still a relevant value but it's quite low. The slope is 0.94. It is a positive value, and even though it might seem small, it can have a huge impact.
+
+#It's problematic to ignore the panel structure of the data since this bivariate OLS regression doesn't consider that the data are from different years and different countries, it treats them as totally independent values. With a fixed effect model it will be possible to consider the geographical and time factors of the data, to better estimate the regression line.
+
+#table model 1
+tab1 <- tbl_regression(model1, label = wdi_gini ~ "Gini index",
+                         intercept = TRUE) %>%
+  add_glance_table(include = c(adj.r.squared)) %>%
+  modify_header(label = "**Variable**", p.value = "**P**") %>%
+  add_significance_stars(hide_ci = FALSE, hide_p = FALSE) %>%
+  modify_caption("**Bivariate Model: gini index and infant mortality** (N =
+{N})") %>%
+  as_gt() %>%
+  gt::tab_options(table.font.names = "Times New Roman")
+print(tab1)
+gt::gtsave(tab1, file = "Table2_Bivariate.png")
+
+#scatterplot
+graph_scatter <- ggplot(mini_qog, aes(x = wdi_gini, y = wdi_mortinf)) +
+  geom_point(alpha = 0.6, color = "darkblue") + 
+  geom_smooth(method = "lm", color = "red", se = TRUE) + 
+  labs(
+    title = "Relationship between inequity and infant mortality",
+    subtitle = "Analysis OLS (Pooled)",
+    x = "Gini index (inequity)",
+    y = "Infant mortality (per 1,000 births)",
+    caption = "Source: QoG Dataset") +
+  theme_minimal()
+print(graph_scatter)
+
+#In the scatter plot, we can see that the data are concentrated in the lower range of both the Gini index and infant mortality. The regression line has a positive slope, a trend that is also noticeable from the position of the points. It looks like a higher Gini index might be associated with higher levels of infant mortality.
+
+```
+
+3. Bivariate fixed-effects regression (panel structure)
+
+In this part, I created two models: the first with country and time fixed effects, and the second with country fixed effects. Then, I compared the graph of the OLS bivariate model with that of the within-country fixed effects model.
+
+```{r part 3}
+model2 <- feols(wdi_mortinf ~ wdi_gini | cname + year, 
+                    data = mini_qog)
+
+#This model differs from pooled OLS because it considers both country and time. By subtracting the group mean, this model removes the individual intercepts and controls for time-invariant characteristics. This makes it possible to compare countries by focusing on the slope of the relationship, rather than their starting levels. 
+
+# Results
+summary(model2)
+
+#table model 2.1
+tab2 <- tbl_regression(model2, label = wdi_gini ~ "Gini index",
+                         intercept = TRUE) %>%
+  add_glance_table(include = c(adj.r.squared)) %>%
+  modify_header(label = "**Variable**", p.value = "**P**") %>%
+  add_significance_stars(hide_ci = FALSE, hide_p = FALSE) %>%
+  modify_caption("**Bivariate Model FE: gini index and infant mortality** (N =
+{N})") %>%
+  as_gt() %>%
+  gt::tab_options(table.font.names = "Times New Roman")
+print(tab2)
+gt::gtsave(tab2, file = "Table3_BivariateFE.png")
+
+# Within-country model
+
+qog_country <- mini_qog %>%
+  group_by(cname) %>%
+  mutate(
+    gini_dm  = wdi_gini - mean(wdi_gini,  na.rm = TRUE),
+    mortinf_dm =  wdi_mortinf- mean(wdi_mortinf, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+#here I create the model
+ols_within <- lm(mortinf_dm ~ gini_dm, data = qog_country)
+
+summary(ols_within)
+
+#table model 2.2
+tab2.1 <- tbl_regression(ols_within, label = gini_dm ~ "Gini index",
+                         intercept = TRUE) %>%
+  add_glance_table(include = c(adj.r.squared)) %>%
+  modify_header(label = "**Variable**", p.value = "**P**") %>%
+  add_significance_stars(hide_ci = FALSE, hide_p = FALSE) %>%
+  modify_caption("**Bivariate Model FE: gini index and infant mortality** (N =
+{N})") %>%
+  as_gt() %>%
+  gt::tab_options(table.font.names = "Times New Roman")
+print(tab2.1)
+gt::gtsave(tab2.1, file = "Table4_BivariateFEcountry.png")
+
+par(mfrow = c(1, 2))  # it is usefull to compere the two graphs
+
+# first plot with the OSL bivariate relations
+plot(
+  mini_qog$wdi_gini,
+  mini_qog$wdi_mortinf,
+  pch = 16,
+  col = rgb(0, 0, 0, 0.3),
+  xlab = "Income inequality (Gini)",
+  ylab = "Mortality rate, infant (per 1,000 live births)",
+  main = "Cross-sectional (between-country)"
+)
+
+abline(model1, col = "red", lwd = 2)
+
+
+# Second graphs within-country relationship
+plot(
+  qog_country$gini_dm,
+  qog_country$mortinf_dm,
+  pch = 16,
+  col = rgb(0, 0, 0, 0.3),
+  xlab = "Gini (deviation from country mean)",
+  ylab = "Mortality rate, infant (deviation from country mean)",
+  main = "Within-country (longitudinal)"
+)
+
+abline(ols_within, col = "blue", lwd = 2)
+
+par(mfrow = c(1, 1))
+
+#In both models, the relationship between the focal variables is statistically significant, as indicated by the p-values.
+#The within-country model removes country-specific characteristics, isolating the effect of the focal relationship. This analysis shows that, even after controlling for these characteristics, the relationship remains positive and significant. This is demonstrated by the slope of 0.89. Since the OLS bivariate slope was 0.94, the difference between the two models demonstrates that the OLS relationship was partially driven by national characteristics.
+
+```
+
+4. Extending the fixed-effects model with time-varying controls
+
+We extend the previous model (model2) by adding three time-varying control variables:
+# 1. Log of GDP per capita: Proxies for economic development and resources available for health.
+# 2. Democracy Index (vdem_libdem): Captures institutional quality and public good provision.
+# 3. Urban Population (wdi_popurb): Proxies for access to hospital infrastructure.
+
+```{r part 4}
+model3 <- feols(wdi_mortinf ~ wdi_gini + 
+                                 log(wdi_gdpcapcur) + #we use the log because the relationship is non-linear: an income increase of $1,000 matters more in a poor country than in a rich country. With the log transformation, we capture the percentage change of GDP
+                                 vdem_libdem + 
+                                 wdi_popurb 
+                               | cname + year, 
+                               data = mini_qog)
+summary(model3)
+
+# comparing the model 1 with the model 2 (model without control and model with control variables)
+etable(model2, model3,
+       dict = c(wdi_gini = "Gini coefficient",
+                "log(wdi_gdpcapcur)" = "GDP per capita (log)",
+                vdem_libdem = "Democracy Index",
+                wdi_popurb = "Urban Population"))
+
+#Print the table of the model 3
+table3 <- tbl_regression(model3,intercept = TRUE,
+                         label = c(label = wdi_gini ~ "Gini index", "log(wdi_gdpcapcur)" = "GDP per capita (log)", vdem_libdem = "Democracy Index", wdi_popurb = "Urban Population")) %>% 
+  add_glance_table(include = c(adj.r.squared)) %>% 
+  add_significance_stars(hide_ci = FALSE, hide_p = FALSE)%>% 
+  modify_header(label = "**Variable**", p.value = "**P**") %>%
+  modify_caption("**Model with control variables** (N = {N})")%>%
+  as_gt() %>%
+  gt::tab_options(table.font.names = "Times New Roman")
+print(table3)
+gt::gtsave(table3, file = "Table5_ControlFE.png")
+
+# In Model 2 (bivariate FE), the Gini coefficient was approx 0.436.
+# In Model 3 (multivariate FE), the Gini coefficient decreased to 0.374.
+# The coefficient decreased, this suggests that part of the effect previously attributed to inequality was actually driven by economic development, urbanization or institutional quality. For example, poorer countries tend to be both more unequal and have higher mortality. By controlling for GDP, we isolate the specific impact of inequality more precisely.
+# The relationship remains statistically significant (p < 0.001).
+
+# Control variables:
+# - Log GDP (-3.30): Strong effect. As countries get richer, they acquire the resources (nutrition, sanitation, medical infrastructure) necessary to significantly lower mortality rates.
+# - Democracy (-9.54): Strong negative effect. Since democracies are subjected to pressure from the electors to prioritize public goods, such as healthcare and social safety nets, compared to autocracies. The lack of investment in this sector in autocracies generate higher level of infant mortality. The coefficient of democracy rapresent the cvariation of infant mortality if they switch from a total democracy to an autocracy.
+# - Urbanization (-0.46): The negative coefficient indicate that people in the countryside have more difficult access to the healthcare system and may have lower levels of income. While this coefficient appears to be the smallest, it is due to the different scale (0-100%): it measures the impact of a single percentage point change, rather than a full regime change.
+
+#Due to the use of fixed Effects, we can claim that these aren't just correlations between different countries, but rather that when a specific country decreases the level of inequity, its infant mortality rate drops.
+```
+
+5. Comparing fixed-effects models and visualizing differences
+
+To compare the two variables I decided to create two different graphs
+
+```{r part 5}
+
+#first graph
+coefplot(
+  list("Bivariate" = model2, "Multiple" = model3),
+  keep = "wdi_gini",                                   
+  main = "Coefficient comparison",                     
+  grid = TRUE,                                        
+  zero = TRUE                                         
+)
+
+# Extract the slope
+coef_model2 <- coef(model2)["wdi_gini"]
+coef_model3 <- coef(model3)["wdi_gini"]
+
+#the second graph to compare the two models
+ggplot(qog_cen, aes(x = gini_dm, y = mortinf_dm)) + #the variables are centered (I subtracted the mean)
+  # The line of the bivariate model
+  geom_abline(intercept = 0, slope = coef_model2, 
+              color = "blue", size = 0.5, linetype = "dashed") +
+  # The line of the multivariate model
+  geom_abline(intercept = 0, slope = coef_model3, 
+              color = "red", size = 0.5, linetype = "solid") +
+  geom_hline(yintercept = 0, size = 0.2) +
+  geom_vline(xintercept = 0, size = 0.2) +
+  labs(
+    title = "Comparing fixed-effects models and visualizing differences",
+    subtitle = paste0("Blue: Bivariate (Slope = ", round(coef_model2, 3), 
+                      ") | red: Multivariate (Slope = ", round(coef_model3, 3), ")"),
+    x = "Gini index",
+    y = "Infant mortality rate",
+  ) +
+  theme_minimal()
+
+#This two graph are a rappresentation of the the bivariate and multivariate models. They are powerfull because they allow us to brefly see the realtions that was described in the part 4. Visually, we observe a decrease of the coefficient, the point estimate for the Gini index decrease from 0.44 to 0.37 after adjusting for confounders. This reduction suggests that the bivariate model was upwardly biased. At the same time this graph demostrate that the relation is still real and strong.
+
+```
+
+6. Correlation structure (optional)
+
+In this section i try to verify if there is potential multicollinearity creating a correlation matrix and calculating the vif.
+
+```{r part 6}
+
+#crate the correlation matrix
+mini_qog %>%
+  select(-mad_gdppc1900,-cname, -year) %>%
+  datasummary_correlation(
+    use = "pairwise.complete.obs",
+    output = "data.frame"
+  )
+
+#Urbanization is the Strongest Predictor of Health. The strongest relationship is between Urban Population and Infant Mortality (-0.66). As urbanization rises, infant death rates drop due to better access to hospitals and infrastructure in cities. This correlation is even stronger than the link between GDP and mortality (-0.41). Three variables move positively: GDP, Liberal Democracy, and Urbanization. This suggests that as countries develop economically, they tend to become more democratic and more urban. The Gini Index has negative correlations with both GDP and Democracy.
+
+
+#With the first analysis we have verified that there was no multicollinearity between two variables but perhaps one variable is the result of the combination of two, with the following analysis we are more confident that there aren't ay case of multicollinearity
+
+modelvif <- lm(wdi_mortinf ~ wdi_gini + 
+               log(wdi_gdpcapcur) + 
+               vdem_libdem + 
+               wdi_popurb, 
+  data = mini_qog)
+
+vif(modelvif)
+#The VIF analysis confirms that there isn't multicollinearity between this variables. All VIF values are below the conservative threshold of 5. The highest VIF is found for log GDP per capita (4.17).
+```
+
+7. Interaction (optional)
+
+In this last section we created a model with an interaction term: mad_gdppc1900
+The question that we are tring to answer with this analysi is: does a country's historical level of development mitigate or exacerbate the impact of current inequality?
+
+```{r part 7}
+
+model4 <- feols(wdi_mortinf ~ wdi_gini * log(mad_gdppc1900) +
+                log(wdi_gdpcapcur) + 
+                vdem_libdem + 
+                wdi_popurb | cname + year,
+                data = mini_qog)
+
+summary(model4) 
+
+#table model 3
+table4 <- tbl_regression(model4,intercept = TRUE,
+                         label = c(label = wdi_gini ~ "Gini index", "log(wdi_gdpcapcur)" = "GDP per capita (log)", vdem_libdem = "Democracy Index", wdi_popurb = "Urban Population", "log(mad_gdppc1900" = "GDP 1900 (log)")) %>% 
+  add_glance_table(include = c(adj.r.squared)) %>% 
+  add_significance_stars(hide_ci = FALSE, hide_p = FALSE)%>% 
+  modify_header(label = "**Variable**", p.value = "**P**") %>%
+  modify_caption("**Model with interaction** (N = {N})")%>%
+  as_gt() %>%
+  gt::tab_options(table.font.names = "Times New Roman")
+print(table4)
+gt::gtsave(table4, file = "Table6_ControlModFE.png")
+
+
+#As reported in Table 6, the results is a negative interaction coefficient (−0.047), which would suggest a mitigating effect. However, this result is not statistically significant (p>0.1). 
+#the inclusion of this interaction variable made the gini index lose significance, making it not statistically significant. Instead of clarifying the relationship, the interaction obscured the main focal relationship.
+#The new sample size (N) dropped by more than half, from 2,039 to 973. This is likely because the historical variable mad_gdppc1900 is missing for many countries (likely developing nations).
+#Therefore, based on this analysis, we cannot conclude that a country's historical wealth significantly influences the relationship between inequality and infant mortality, and for this focal relationship is better to consider the model 3.
+
+```
